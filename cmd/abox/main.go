@@ -7,7 +7,6 @@ package main
 import (
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"math/big"
@@ -23,6 +22,7 @@ import (
 	"deaddrop/carrier"
 	"deaddrop/crypto"
 	"deaddrop/drop"
+	"deaddrop/keyfile"
 	"deaddrop/message"
 	"deaddrop/message/cryptotx"
 )
@@ -64,69 +64,6 @@ func usage() {
 	os.Exit(2)
 }
 
-// --- identity / contact persistence (hex JSON) ---
-
-type fileIdentity struct {
-	Suite   byte   `json:"suite"`
-	EncPriv string `json:"encPriv"`
-	EncPub  string `json:"encPub"`
-	SigPriv string `json:"sigPriv"`
-	SigPub  string `json:"sigPub"`
-}
-
-type fileContact struct {
-	Suite  byte   `json:"suite"`
-	EncPub string `json:"encPub"`
-	SigPub string `json:"sigPub"`
-}
-
-func saveIdentity(path string, id *crypto.Identity) error {
-	f := fileIdentity{
-		Suite:   id.SuiteID,
-		EncPriv: hex.EncodeToString(id.EncPriv), EncPub: hex.EncodeToString(id.EncPub),
-		SigPriv: hex.EncodeToString(id.SigPriv), SigPub: hex.EncodeToString(id.SigPub),
-	}
-	b, _ := json.MarshalIndent(f, "", "  ")
-	return os.WriteFile(path, b, 0o600)
-}
-
-func loadIdentity(path string) (*crypto.Identity, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var f fileIdentity
-	if err := json.Unmarshal(b, &f); err != nil {
-		return nil, err
-	}
-	return &crypto.Identity{
-		SuiteID: f.Suite,
-		EncPriv: mustHex(f.EncPriv), EncPub: mustHex(f.EncPub),
-		SigPriv: mustHex(f.SigPriv), SigPub: mustHex(f.SigPub),
-	}, nil
-}
-
-func loadContact(path string) (crypto.Contact, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return crypto.Contact{}, err
-	}
-	var f fileContact
-	if err := json.Unmarshal(b, &f); err != nil {
-		return crypto.Contact{}, err
-	}
-	return crypto.Contact{SuiteID: f.Suite, EncPub: mustHex(f.EncPub), SigPub: mustHex(f.SigPub)}, nil
-}
-
-func contactJSON(c crypto.Contact) string {
-	b, _ := json.MarshalIndent(fileContact{
-		Suite: c.SuiteID, EncPub: hex.EncodeToString(c.EncPub), SigPub: hex.EncodeToString(c.SigPub),
-	}, "", "  ")
-	return string(b)
-}
-
-func mustHex(s string) []byte { b, _ := hex.DecodeString(s); return b }
-
 // --- commands ---
 
 func cmdKeygen(args []string) {
@@ -136,23 +73,23 @@ func cmdKeygen(args []string) {
 
 	id, err := crypto.NewIdentity(crypto.Modern())
 	check(err)
-	check(saveIdentity(*out, id))
+	check(keyfile.SaveIdentity(*out, id))
 	fmt.Printf("identity written to %s\nfingerprint: %s\n\ncontact:\n%s\n",
-		*out, id.Contact().Fingerprint(), contactJSON(id.Contact()))
+		*out, id.Contact().Fingerprint(), keyfile.ContactJSON(id.Contact()))
 }
 
 func cmdContact(args []string) {
 	fs := flag.NewFlagSet("contact", flag.ExitOnError)
 	idFile := fs.String("id", "identity.json", "identity file")
 	fs.Parse(args)
-	id, err := loadIdentity(*idFile)
+	id, err := keyfile.LoadIdentity(*idFile)
 	check(err)
 	fmt.Fprintf(os.Stderr, "fingerprint: %s\n", id.Contact().Fingerprint())
-	fmt.Println(contactJSON(id.Contact())) // stdout only → redirectable to a contact file
+	fmt.Println(keyfile.ContactJSON(id.Contact())) // stdout only → redirectable to a contact file
 }
 
 func openService(idFile, dropDir string) (*message.Service, *crypto.Identity) {
-	id, err := loadIdentity(idFile)
+	id, err := keyfile.LoadIdentity(idFile)
 	check(err)
 	mb := drop.NewMailbox(carrier.NewFS(dropDir), id)
 	return message.NewService(mb, message.NewRegistry()), id
@@ -167,7 +104,7 @@ func cmdSend(args []string) {
 	fs.Parse(args)
 
 	svc, _ := openService(*idFile, *dropDir)
-	to, err := loadContact(*toFile)
+	to, err := keyfile.LoadContact(*toFile)
 	check(err)
 	id, err := svc.Send(to, message.Text{Body: *text})
 	check(err)
@@ -182,7 +119,7 @@ func cmdRecv(args []string) {
 	once := fs.Bool("once", false, "poll once and exit")
 	fs.Parse(args)
 
-	id, err := loadIdentity(*idFile)
+	id, err := keyfile.LoadIdentity(*idFile)
 	check(err)
 	reg := message.NewRegistry()
 	reg.Register(message.TextHandler{OnText: func(from crypto.Contact, t message.Text) {
@@ -212,7 +149,7 @@ func cmdSafePropose(args []string) {
 	fs.Parse(args)
 
 	svc, _ := openService(*idFile, *dropDir)
-	to, err := loadContact(*toFile)
+	to, err := keyfile.LoadContact(*toFile)
 	check(err)
 	wkey, err := ethcrypto.HexToECDSA(*wallet)
 	check(err)
@@ -242,7 +179,7 @@ func cmdSafeCosign(args []string) {
 	once := fs.Bool("once", false, "poll once and exit")
 	fs.Parse(args)
 
-	id, err := loadIdentity(*idFile)
+	id, err := keyfile.LoadIdentity(*idFile)
 	check(err)
 	wkey, err := ethcrypto.HexToECDSA(*wallet)
 	check(err)
